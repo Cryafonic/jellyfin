@@ -6,18 +6,20 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Api.Extensions;
-using Jellyfin.Api.Models.StreamingDtos;
 using Jellyfin.Data.Enums;
 using Jellyfin.Extensions;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Extensions;
 using MediaBrowser.Controller.Configuration;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Controller.Streaming;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Net.Http.Headers;
 
 namespace Jellyfin.Api.Helpers;
@@ -38,7 +40,7 @@ public static class StreamingHelpers
     /// <param name="serverConfigurationManager">Instance of the <see cref="IServerConfigurationManager"/> interface.</param>
     /// <param name="mediaEncoder">Instance of the <see cref="IMediaEncoder"/> interface.</param>
     /// <param name="encodingHelper">Instance of <see cref="EncodingHelper"/>.</param>
-    /// <param name="transcodingJobHelper">Initialized <see cref="TranscodingJobHelper"/>.</param>
+    /// <param name="transcodeManager">Instance of the <see cref="ITranscodeManager"/> interface.</param>
     /// <param name="transcodingJobType">The <see cref="TranscodingJobType"/>.</param>
     /// <param name="cancellationToken">The <see cref="CancellationToken"/>.</param>
     /// <returns>A <see cref="Task"/> containing the current <see cref="StreamState"/>.</returns>
@@ -51,7 +53,7 @@ public static class StreamingHelpers
         IServerConfigurationManager serverConfigurationManager,
         IMediaEncoder mediaEncoder,
         EncodingHelper encodingHelper,
-        TranscodingJobHelper transcodingJobHelper,
+        ITranscodeManager transcodeManager,
         TranscodingJobType transcodingJobType,
         CancellationToken cancellationToken)
     {
@@ -74,7 +76,7 @@ public static class StreamingHelpers
             streamingRequest.AudioCodec = encodingHelper.InferAudioCodec(url);
         }
 
-        var state = new StreamState(mediaSourceManager, transcodingJobType, transcodingJobHelper)
+        var state = new StreamState(mediaSourceManager, transcodingJobType, transcodeManager)
         {
             Request = streamingRequest,
             RequestedUrl = url,
@@ -82,7 +84,7 @@ public static class StreamingHelpers
         };
 
         var userId = httpContext.User.GetUserId();
-        if (!userId.Equals(default))
+        if (!userId.IsEmpty())
         {
             state.User = userManager.GetUserById(userId);
         }
@@ -107,7 +109,8 @@ public static class StreamingHelpers
                                           ?? state.SupportedSubtitleCodecs.FirstOrDefault();
         }
 
-        var item = libraryManager.GetItemById(streamingRequest.Id);
+        var item = libraryManager.GetItemById<BaseItem>(streamingRequest.Id)
+            ?? throw new ResourceNotFoundException();
 
         state.IsInputVideo = item.MediaType == MediaType.Video;
 
@@ -115,7 +118,7 @@ public static class StreamingHelpers
         if (string.IsNullOrWhiteSpace(streamingRequest.LiveStreamId))
         {
             var currentJob = !string.IsNullOrWhiteSpace(streamingRequest.PlaySessionId)
-                ? transcodingJobHelper.GetTranscodingJob(streamingRequest.PlaySessionId)
+                ? transcodeManager.GetTranscodingJob(streamingRequest.PlaySessionId)
                 : null;
 
             if (currentJob is not null)
@@ -125,7 +128,7 @@ public static class StreamingHelpers
 
             if (mediaSource is null)
             {
-                var mediaSources = await mediaSourceManager.GetPlaybackMediaSources(libraryManager.GetItemById(streamingRequest.Id), null, false, false, cancellationToken).ConfigureAwait(false);
+                var mediaSources = await mediaSourceManager.GetPlaybackMediaSources(libraryManager.GetItemById<BaseItem>(streamingRequest.Id), null, false, false, cancellationToken).ConfigureAwait(false);
 
                 mediaSource = string.IsNullOrEmpty(streamingRequest.MediaSourceId)
                     ? mediaSources[0]
@@ -142,6 +145,12 @@ public static class StreamingHelpers
             var liveStreamInfo = await mediaSourceManager.GetLiveStreamWithDirectStreamProvider(streamingRequest.LiveStreamId, cancellationToken).ConfigureAwait(false);
             mediaSource = liveStreamInfo.Item1;
             state.DirectStreamProvider = liveStreamInfo.Item2;
+
+            // Cap the max bitrate when it is too high. This is usually due to ffmpeg is unable to probe the source liveTV streams' bitrate.
+            if (mediaSource.FallbackMaxStreamingBitrate is not null && streamingRequest.VideoBitRate is not null)
+            {
+                streamingRequest.VideoBitRate = Math.Min(streamingRequest.VideoBitRate.Value, mediaSource.FallbackMaxStreamingBitrate.Value);
+            }
         }
 
         var encodingOptions = serverConfigurationManager.GetEncodingOptions();
@@ -163,6 +172,9 @@ public static class StreamingHelpers
         }
 
         var outputAudioCodec = streamingRequest.AudioCodec;
+        state.OutputAudioCodec = outputAudioCodec;
+        state.OutputContainer = (containerInternal ?? string.Empty).TrimStart('.');
+        state.OutputAudioChannels = encodingHelper.GetNumAudioChannelsParam(state, state.AudioStream, state.OutputAudioCodec);
         if (EncodingHelper.LosslessAudioCodecs.Contains(outputAudioCodec))
         {
             state.OutputAudioBitrate = state.AudioStream.BitRate ?? 0;
@@ -176,10 +188,6 @@ public static class StreamingHelpers
         {
             containerInternal = ".pcm";
         }
-
-        state.OutputAudioCodec = outputAudioCodec;
-        state.OutputContainer = (containerInternal ?? string.Empty).TrimStart('.');
-        state.OutputAudioChannels = encodingHelper.GetNumAudioChannelsParam(state, state.AudioStream, state.OutputAudioCodec);
 
         if (state.VideoRequest is not null)
         {
@@ -225,7 +233,7 @@ public static class StreamingHelpers
 
         var ext = string.IsNullOrWhiteSpace(state.OutputContainer)
             ? GetOutputFileExtension(state, mediaSource)
-            : ("." + state.OutputContainer);
+            : ("." + GetContainerFileExtension(state.OutputContainer));
 
         state.OutputFilePath = GetOutputFilePath(state, ext, serverConfigurationManager, streamingRequest.DeviceId, streamingRequest.PlaySessionId);
 
@@ -558,5 +566,24 @@ public static class StreamingHelpers
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Parses the container into its file extension.
+    /// </summary>
+    /// <param name="container">The container.</param>
+    private static string? GetContainerFileExtension(string? container)
+    {
+        if (string.Equals(container, "mpegts", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ts";
+        }
+
+        if (string.Equals(container, "matroska", StringComparison.OrdinalIgnoreCase))
+        {
+            return "mkv";
+        }
+
+        return container;
     }
 }

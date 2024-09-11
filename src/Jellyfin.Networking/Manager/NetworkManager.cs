@@ -11,7 +11,6 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Model.Net;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using static MediaBrowser.Controller.Extensions.ConfigurationExtensions;
@@ -98,10 +97,15 @@ public class NetworkManager : INetworkManager, IDisposable
         _networkEventLock = new object();
         _remoteAddressFilter = new List<IPNetwork>();
 
+        _ = bool.TryParse(startupConfig[DetectNetworkChangeKey], out var detectNetworkChange);
+
         UpdateSettings(_configurationManager.GetNetworkConfiguration());
 
-        NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
-        NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        if (detectNetworkChange)
+        {
+            NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+            NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        }
 
         _configurationManager.NamedConfigurationUpdated += ConfigurationUpdated;
     }
@@ -237,7 +241,7 @@ public class NetworkManager : INetworkManager, IDisposable
                         var mac = adapter.GetPhysicalAddress();
 
                         // Populate MAC list
-                        if (adapter.NetworkInterfaceType != NetworkInterfaceType.Loopback && PhysicalAddress.None.Equals(mac))
+                        if (adapter.NetworkInterfaceType != NetworkInterfaceType.Loopback && !PhysicalAddress.None.Equals(mac))
                         {
                             macAddresses.Add(mac);
                         }
@@ -412,7 +416,9 @@ public class NetworkManager : INetworkManager, IDisposable
                 interfaces.RemoveAll(x => x.AddressFamily == AddressFamily.InterNetworkV6);
             }
 
-            _interfaces = interfaces;
+            // Users may have complex networking configuration that multiple interfaces sharing the same IP address
+            // Only return one IP for binding, and let the OS handle the rest
+            _interfaces = interfaces.DistinctBy(iface => iface.Address).ToList();
         }
     }
 
@@ -737,7 +743,9 @@ public class NetworkManager : INetworkManager, IDisposable
     /// <inheritdoc/>
     public IReadOnlyList<IPData> GetAllBindInterfaces(bool individualInterfaces = false)
     {
-        if (_interfaces.Count > 0 || individualInterfaces)
+        var config = _configurationManager.GetNetworkConfiguration();
+        var localNetworkAddresses = config.LocalNetworkAddresses;
+        if ((localNetworkAddresses.Length > 0 && !string.IsNullOrWhiteSpace(localNetworkAddresses[0]) && _interfaces.Count > 0) || individualInterfaces)
         {
             return _interfaces;
         }
@@ -900,15 +908,30 @@ public class NetworkManager : INetworkManager, IDisposable
         return false;
     }
 
+    /// <summary>
+    ///  Get if the IPAddress is Link-local.
+    /// </summary>
+    /// <param name="address">The IP Address.</param>
+    /// <returns>Bool indicates if the address is link-local.</returns>
+    public bool IsLinkLocalAddress(IPAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        return NetworkConstants.IPv4RFC3927LinkLocal.Contains(address) || address.IsIPv6LinkLocal;
+    }
+
     /// <inheritdoc/>
     public bool IsInLocalNetwork(IPAddress address)
     {
         ArgumentNullException.ThrowIfNull(address);
 
-        // See conversation at https://github.com/jellyfin/jellyfin/pull/3515.
+        // Map IPv6 mapped IPv4 back to IPv4 (happens if Kestrel runs in dual-socket mode)
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
         if ((TrustAllIPv6Interfaces && address.AddressFamily == AddressFamily.InterNetworkV6)
-            || address.Equals(IPAddress.Loopback)
-            || address.Equals(IPAddress.IPv6Loopback))
+            || IPAddress.IsLoopback(address))
         {
             return true;
         }
@@ -1017,7 +1040,7 @@ public class NetworkManager : INetworkManager, IDisposable
         result = string.Empty;
 
         int count = _interfaces.Count;
-        if (count == 1 && (_interfaces[0].Equals(IPAddress.Any) || _interfaces[0].Equals(IPAddress.IPv6Any)))
+        if (count == 1 && (_interfaces[0].Address.Equals(IPAddress.Any) || _interfaces[0].Address.Equals(IPAddress.IPv6Any)))
         {
             // Ignore IPAny addresses.
             count = 0;
@@ -1049,7 +1072,7 @@ public class NetworkManager : INetworkManager, IDisposable
                 return true;
             }
 
-            _logger.LogWarning("{Source}: External request received, no matching external bind address found, trying internal addresses.", source);
+            _logger.LogDebug("{Source}: External request received, no matching external bind address found, trying internal addresses", source);
         }
         else
         {
@@ -1081,13 +1104,17 @@ public class NetworkManager : INetworkManager, IDisposable
     private bool MatchesExternalInterface(IPAddress source, out string result)
     {
         // Get the first external interface address that isn't a loopback.
-        var extResult = _interfaces.Where(p => !IsInLocalNetwork(p.Address)).OrderBy(x => x.Index).ToArray();
+        var extResult = _interfaces
+            .Where(p => !IsInLocalNetwork(p.Address))
+            .Where(p => p.Address.AddressFamily.Equals(source.AddressFamily))
+            .Where(p => !IsLinkLocalAddress(p.Address))
+            .OrderBy(x => x.Index).ToArray();
 
         // No external interface found
         if (extResult.Length == 0)
         {
             result = string.Empty;
-            _logger.LogWarning("{Source}: External request received, but no external interface found. Need to route through internal network.", source);
+            _logger.LogDebug("{Source}: External request received, but no external interface found. Need to route through internal network", source);
             return false;
         }
 
@@ -1114,12 +1141,13 @@ public class NetworkManager : INetworkManager, IDisposable
         var logLevel = debug ? LogLevel.Debug : LogLevel.Information;
         if (_logger.IsEnabled(logLevel))
         {
-            _logger.Log(logLevel, "Defined LAN addresses: {0}", _lanSubnets.Select(s => s.Prefix + "/" + s.PrefixLength));
-            _logger.Log(logLevel, "Defined LAN exclusions: {0}", _excludedSubnets.Select(s => s.Prefix + "/" + s.PrefixLength));
-            _logger.Log(logLevel, "Using LAN addresses: {0}", _lanSubnets.Where(s => !_excludedSubnets.Contains(s)).Select(s => s.Prefix + "/" + s.PrefixLength));
-            _logger.Log(logLevel, "Using bind addresses: {0}", _interfaces.OrderByDescending(x => x.AddressFamily == AddressFamily.InterNetwork).Select(x => x.Address));
-            _logger.Log(logLevel, "Remote IP filter is {0}", config.IsRemoteIPFilterBlacklist ? "Blocklist" : "Allowlist");
-            _logger.Log(logLevel, "Filter list: {0}", _remoteAddressFilter.Select(s => s.Prefix + "/" + s.PrefixLength));
+            _logger.Log(logLevel, "Defined LAN subnets: {Subnets}", _lanSubnets.Select(s => s.Prefix + "/" + s.PrefixLength));
+            _logger.Log(logLevel, "Defined LAN exclusions: {Subnets}", _excludedSubnets.Select(s => s.Prefix + "/" + s.PrefixLength));
+            _logger.Log(logLevel, "Used LAN subnets: {Subnets}", _lanSubnets.Where(s => !_excludedSubnets.Contains(s)).Select(s => s.Prefix + "/" + s.PrefixLength));
+            _logger.Log(logLevel, "Filtered interface addresses: {Addresses}", _interfaces.OrderByDescending(x => x.AddressFamily == AddressFamily.InterNetwork).Select(x => x.Address));
+            _logger.Log(logLevel, "Bind Addresses {Addresses}", GetAllBindInterfaces(false).OrderByDescending(x => x.AddressFamily == AddressFamily.InterNetwork).Select(x => x.Address));
+            _logger.Log(logLevel, "Remote IP filter is {Type}", config.IsRemoteIPFilterBlacklist ? "Blocklist" : "Allowlist");
+            _logger.Log(logLevel, "Filtered subnets: {Subnets}", _remoteAddressFilter.Select(s => s.Prefix + "/" + s.PrefixLength));
         }
     }
 }

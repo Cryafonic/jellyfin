@@ -1,17 +1,24 @@
 #pragma warning disable CS1591
 
 using System;
+using System.ComponentModel;
 
 namespace MediaBrowser.Model.Configuration
 {
     public class LibraryOptions
     {
+        private static readonly char[] _defaultTagDelimiters = ['/', '|', ';', '\\'];
+
         public LibraryOptions()
         {
             TypeOptions = Array.Empty<TypeOptions>();
             DisabledSubtitleFetchers = Array.Empty<string>();
+            DisabledMediaSegmentProviders = Array.Empty<string>();
+            MediaSegmentProvideOrder = Array.Empty<string>();
             SubtitleFetcherOrder = Array.Empty<string>();
             DisabledLocalMetadataReaders = Array.Empty<string>();
+            DisabledLyricFetchers = Array.Empty<string>();
+            LyricFetcherOrder = Array.Empty<string>();
 
             SkipSubtitlesIfAudioTrackMatches = true;
             RequirePerfectSubtitleMatch = true;
@@ -20,10 +27,19 @@ namespace MediaBrowser.Model.Configuration
             AutomaticallyAddToCollection = false;
             EnablePhotos = true;
             SaveSubtitlesWithMedia = true;
+            SaveLyricsWithMedia = false;
+            SaveTrickplayWithMedia = false;
             PathInfos = Array.Empty<MediaPathInfo>();
             EnableAutomaticSeriesGrouping = true;
             SeasonZeroDisplayName = "Specials";
+
+            PreferNonstandardArtistsTag = false;
+            UseCustomTagDelimiters = false;
+            CustomTagDelimiters = _defaultTagDelimiters;
+            DelimiterWhitelist = Array.Empty<string>();
         }
+
+        public bool Enabled { get; set; } = true;
 
         public bool EnablePhotos { get; set; }
 
@@ -80,6 +96,10 @@ namespace MediaBrowser.Model.Configuration
 
         public string[] SubtitleFetcherOrder { get; set; }
 
+        public string[] DisabledMediaSegmentProviders { get; set; }
+
+        public string[] MediaSegmentProvideOrder { get; set; }
+
         public bool SkipSubtitlesIfEmbeddedSubtitlesPresent { get; set; }
 
         public bool SkipSubtitlesIfAudioTrackMatches { get; set; }
@@ -89,6 +109,27 @@ namespace MediaBrowser.Model.Configuration
         public bool RequirePerfectSubtitleMatch { get; set; }
 
         public bool SaveSubtitlesWithMedia { get; set; }
+
+        [DefaultValue(false)]
+        public bool SaveLyricsWithMedia { get; set; }
+
+        [DefaultValue(false)]
+        public bool SaveTrickplayWithMedia { get; set; }
+
+        public string[] DisabledLyricFetchers { get; set; }
+
+        public string[] LyricFetcherOrder { get; set; }
+
+        [DefaultValue(false)]
+        public bool PreferNonstandardArtistsTag { get; set; }
+
+        [DefaultValue(false)]
+        public bool UseCustomTagDelimiters { get; set; }
+
+        [DefaultValue(typeof(LibraryOptions), nameof(_defaultTagDelimiters))]
+        public char[] CustomTagDelimiters { get; set; }
+
+        public string[] DelimiterWhitelist { get; set; }
 
         public bool AutomaticallyAddToCollection { get; set; }
 

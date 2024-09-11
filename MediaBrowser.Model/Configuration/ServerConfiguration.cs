@@ -96,8 +96,6 @@ public class ServerConfiguration : BaseApplicationConfiguration
     /// <value>The metadata path.</value>
     public string MetadataPath { get; set; } = string.Empty;
 
-    public string MetadataNetworkPath { get; set; } = string.Empty;
-
     /// <summary>
     /// Gets or sets the preferred metadata language.
     /// </summary>
@@ -163,7 +161,7 @@ public class ServerConfiguration : BaseApplicationConfiguration
     /// If set to 0 the check for inactive sessions gets disabled.
     /// </summary>
     /// <value>The close inactive session threshold in minutes. 0 to disable.</value>
-    public int InactiveSessionThreshold { get; set; } = 10;
+    public int InactiveSessionThreshold { get; set; }
 
     /// <summary>
     /// Gets or sets the delay in seconds that we will wait after a file system change to try and discover what has been added/removed

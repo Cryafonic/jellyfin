@@ -16,7 +16,7 @@
     "Folders": "תיקיות",
     "Genres": "ז׳אנרים",
     "HeaderAlbumArtists": "אמני האלבום",
-    "HeaderContinueWatching": "להמשיך לצפות",
+    "HeaderContinueWatching": "המשך צפייה",
     "HeaderFavoriteAlbums": "אלבומים מועדפים",
     "HeaderFavoriteArtists": "אמנים מועדפים",
     "HeaderFavoriteEpisodes": "פרקים מועדפים",
@@ -60,7 +60,7 @@
     "NotificationOptionUserLockedOut": "משתמש ננעל",
     "NotificationOptionVideoPlayback": "ניגון וידאו החל",
     "NotificationOptionVideoPlaybackStopped": "ניגון וידאו הופסק",
-    "Photos": "תמונות",
+    "Photos": "צילומים",
     "Playlists": "רשימות נגינה",
     "Plugin": "תוסף",
     "PluginInstalledWithName": "{0} הותקן",
@@ -130,5 +130,11 @@
     "TaskAudioNormalization": "נרמול שמע",
     "TaskCleanCollectionsAndPlaylistsDescription": "מנקה פריטים לא קיימים מאוספים ורשימות השמעה.",
     "TaskAudioNormalizationDescription": "מחפש קבצי נורמליזציה של שמע.",
-    "TaskCleanCollectionsAndPlaylists": "מנקה אוספים ורשימות השמעה"
+    "TaskCleanCollectionsAndPlaylists": "מנקה אוספים ורשימות השמעה",
+    "TaskDownloadMissingLyrics": "הורדת מילים חסרות",
+    "TaskDownloadMissingLyricsDescription": "הורדת מילים לשירים",
+    "TaskMoveTrickplayImages": "העברת מיקום התמונות",
+    "TaskExtractMediaSegments": "סריקת מדיה",
+    "TaskExtractMediaSegmentsDescription": "מחלץ חלקי מדיה מתוספים המאפשרים זאת.",
+    "TaskMoveTrickplayImagesDescription": "הזזת קבצי trickplay קיימים בהתאם להגדרות הספרייה."
 }
